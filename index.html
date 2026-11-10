@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Babylon.js App</title>
+    <meta name="description" content="A walkable memorial for live-service games whose servers went dark." />
+    <title>Live Memorial</title>
     <style>
         html, body {
             overflow: hidden;
@@ -11,6 +12,9 @@
             height: 100%;
             margin: 0;
             padding: 0;
+            background: #6b6e73;
+            color: #e8e4da;
+            font-family: Georgia, "Times New Roman", serif;
         }
 
         #renderCanvas {
@@ -18,10 +22,130 @@
             height: 100%;
             touch-action: none;
         }
+
+        #intro {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            max-width: calc(100% - 140px);
+            pointer-events: none;
+            text-shadow: 0 1px 3px #000;
+        }
+
+        #intro h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: normal;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+        }
+
+        #intro p {
+            margin: 4px 0 0;
+            opacity: 0.75;
+        }
+
+        #intro .hint {
+            font-size: 13px;
+            opacity: 0.55;
+        }
+
+        #plaque {
+            position: absolute;
+            left: 50%;
+            bottom: 24px;
+            transform: translateX(-50%);
+            width: min(420px, calc(100% - 32px));
+            box-sizing: border-box;
+            padding: 14px 18px;
+            border: 1px solid rgba(232, 228, 218, 0.25);
+            border-radius: 4px;
+            background: rgba(8, 9, 15, 0.75);
+            text-align: center;
+            pointer-events: none;
+        }
+
+        #plaque[hidden] {
+            display: none;
+        }
+
+        #plaque p {
+            margin: 4px 0;
+        }
+
+        #plaque .name {
+            margin: 0;
+            font-size: 22px;
+            font-weight: normal;
+        }
+
+        #plaque .studio,
+        #plaque .actions {
+            font-size: 13px;
+            opacity: 0.65;
+        }
+
+        /* Trailer iframe, warped each frame onto the in-world CRT screen */
+        #tv {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 640px;
+            height: 480px;
+            overflow: hidden;
+            border-radius: 6%;
+            transform-origin: 0 0;
+            pointer-events: none;
+            filter: contrast(1.15) saturate(1.2);
+        }
+
+        #tv[hidden] {
+            display: none;
+        }
+
+        #tv iframe {
+            display: block;
+            border: 0;
+        }
+
+        /* Scanlines and a dark vignette sell the CRT glass */
+        #tv::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.25) 0 2px, transparent 2px 4px),
+                radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.6));
+        }
+
+        #fps {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            border-radius: 5px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            font: bold 16px monospace;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
-    <canvas id="renderCanvas"></canvas>
+    <canvas id="renderCanvas" aria-label="A graveyard under a storm sky, with headstones for shut-down live-service games"></canvas>
+    <div id="intro">
+        <h1>In Memoriam</h1>
+        <p>Live-service games whose servers went dark.</p>
+        <p class="hint">Click to look around · WASD to walk · F to pay respects · E to play trailer · M to mute sound</p>
+    </div>
+    <div id="plaque" aria-live="polite" hidden>
+        <h2 class="name"></h2>
+        <p class="studio"></p>
+        <p class="dates"></p>
+        <p class="actions"></p>
+    </div>
+    <div id="tv" hidden></div>
+    <div id="fps"></div>
     <script type="module" src="/src/index.ts"></script>
 </body>
 </html>
