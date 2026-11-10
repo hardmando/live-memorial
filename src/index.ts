@@ -44,7 +44,7 @@ const createScene = () => {
   cam.minZ = 0.1;
   cam.maxZ = 500;
   cam.fov = 1.0;
-  cam.speed = 0.15;
+  cam.speed = 0.3;
   cam.inertia = 0.6;
   cam.angularSensibility = 2500;
   cam.keysUp = [87, 38]; // W, Up
