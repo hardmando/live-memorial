@@ -8,8 +8,14 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { createDirtTexture, createFenceTexture, createStoneTexture, mulberry32 } from "./textures";
 import grassUrl from "../textures/grassTexture.jpg";
 
-/** Half the side length of the fenced cemetery plot. */
-export const PLOT_HALF = 26;
+/** The fenced plot: x runs across, z runs from the gate (zMin) back to the mausoleum (zMax). */
+export interface PlotBounds {
+  xHalf: number;
+  zMin: number;
+  zMax: number;
+  /** Strip either side of x = 0 kept clear of decorative graves (the memorial aisle lives there) */
+  aisleHalf: number;
+}
 
 const merge = (name: string, parts: Mesh[], mat: StandardMaterial) => {
   const mesh = Mesh.MergeMeshes(parts, true)!;
@@ -19,13 +25,14 @@ const merge = (name: string, parts: Mesh[], mat: StandardMaterial) => {
   return mesh;
 };
 
-export const createCemetery = (scene: Scene) => {
+export const createCemetery = (scene: Scene, { xHalf, zMin, zMax, aisleHalf }: PlotBounds) => {
   const rng = mulberry32(1337);
+  const zCenter = (zMin + zMax) / 2;
 
   // ---------- materials ----------
   const grassMat = new StandardMaterial("grassMat", scene);
   const grassTex = new Texture(grassUrl, scene);
-  grassTex.uScale = grassTex.vScale = 90;
+  grassTex.uScale = grassTex.vScale = 110;
   grassMat.diffuseTexture = grassTex;
   grassMat.diffuseColor = new Color3(0.4, 0.42, 0.3); // dead, desaturated grass
   grassMat.specularColor = Color3.Black();
@@ -54,24 +61,20 @@ export const createCemetery = (scene: Scene) => {
   barkMat.specularColor = Color3.Black();
 
   // ---------- ground and paths ----------
-  const ground = MeshBuilder.CreateGround("ground", { width: 320, height: 320 }, scene);
+  const ground = MeshBuilder.CreateGround("ground", { width: 400, height: 400 }, scene);
+  ground.position.z = zCenter;
   ground.material = grassMat;
-  ground.checkCollisions = true;
 
+  // Dirt path from outside the gate up to the mausoleum steps
+  const pathStart = zMin - 14;
+  const pathEnd = zMax - 10.5;
   const pathTex = createDirtTexture(scene);
-  pathTex.vScale = 22;
+  pathTex.vScale = (pathEnd - pathStart) / 2.4;
   const pathMat = dirtMat.clone("pathMat");
   pathMat.diffuseTexture = pathTex;
-  const mainPath = MeshBuilder.CreateGround("mainPath", { width: 3, height: PLOT_HALF * 2 + 14 }, scene);
-  mainPath.position.set(0, 0.04, -7);
+  const mainPath = MeshBuilder.CreateGround("mainPath", { width: 2.4, height: pathEnd - pathStart }, scene);
+  mainPath.position.set(0, 0.04, (pathStart + pathEnd) / 2);
   mainPath.material = pathMat;
-  const crossTex = createDirtTexture(scene);
-  crossTex.uScale = 18;
-  const crossMat = dirtMat.clone("crossPathMat");
-  crossMat.diffuseTexture = crossTex;
-  const crossPath = MeshBuilder.CreateGround("crossPath", { width: PLOT_HALF * 2 - 2, height: 2.4 }, scene);
-  crossPath.position.set(0, 0.045, 0);
-  crossPath.material = crossMat;
 
   // ---------- gravestone templates ----------
   const headstone = (() => {
@@ -139,11 +142,10 @@ export const createCemetery = (scene: Scene) => {
 
   // ---------- grave rows ----------
   let n = 0;
-  for (let z = -PLOT_HALF + 4; z < PLOT_HALF - 3; z += 3.4) {
-    for (let x = -PLOT_HALF + 2.5; x < PLOT_HALF - 2; x += 2.3) {
-      if (Math.abs(x) < 2.6) continue; // main path
-      if (Math.abs(z) < 2.2) continue; // cross path
-      if (Math.abs(x) < 6 && z > PLOT_HALF - 13) continue; // mausoleum yard
+  for (let z = zMin + 4; z < zMax - 3; z += 3.4) {
+    for (let x = -xHalf + 2.5; x < xHalf - 2; x += 2.3) {
+      if (Math.abs(x) < aisleHalf) continue; // memorial aisle
+      if (Math.abs(x) < 6 && z > zMax - 13) continue; // mausoleum yard
       if (rng() < 0.22) continue; // gaps in the rows
 
       const px = x + (rng() - 0.5) * 0.5;
@@ -172,9 +174,7 @@ export const createCemetery = (scene: Scene) => {
   fenceMat.specularColor = Color3.Black();
   fenceMat.backFaceCulling = false;
 
-  const panelsPerSide = 22;
-  const panelW = (PLOT_HALF * 2) / panelsPerSide;
-  const panel = MeshBuilder.CreatePlane("fencePanel", { width: panelW, height: 1.8, sideOrientation: Mesh.DOUBLESIDE }, scene);
+  const panel = MeshBuilder.CreatePlane("fencePanel", { width: 1, height: 1.8, sideOrientation: Mesh.DOUBLESIDE }, scene);
   panel.material = fenceMat;
   panel.isVisible = false;
   const post = MeshBuilder.CreateBox("fencePost", { width: 0.12, height: 2, depth: 0.12 }, scene);
@@ -182,13 +182,15 @@ export const createCemetery = (scene: Scene) => {
   post.isVisible = false;
 
   const sides = [
-    { dir: [1, 0], origin: [-PLOT_HALF, -PLOT_HALF], rotY: 0, isFront: true },
-    { dir: [1, 0], origin: [-PLOT_HALF, PLOT_HALF], rotY: 0, isFront: false },
-    { dir: [0, 1], origin: [-PLOT_HALF, -PLOT_HALF], rotY: Math.PI / 2, isFront: false },
-    { dir: [0, 1], origin: [PLOT_HALF, -PLOT_HALF], rotY: Math.PI / 2, isFront: false },
+    { dir: [1, 0], origin: [-xHalf, zMin], length: xHalf * 2, rotY: 0, isFront: true },
+    { dir: [1, 0], origin: [-xHalf, zMax], length: xHalf * 2, rotY: 0, isFront: false },
+    { dir: [0, 1], origin: [-xHalf, zMin], length: zMax - zMin, rotY: Math.PI / 2, isFront: false },
+    { dir: [0, 1], origin: [xHalf, zMin], length: zMax - zMin, rotY: Math.PI / 2, isFront: false },
   ];
   for (const side of sides) {
-    for (let i = 0; i < panelsPerSide; i++) {
+    const panels = Math.round(side.length / 2.4);
+    const panelW = side.length / panels;
+    for (let i = 0; i < panels; i++) {
       const d = panelW * (i + 0.5);
       const cx = side.origin[0] + side.dir[0] * d;
       const cz = side.origin[1] + side.dir[1] * d;
@@ -196,9 +198,10 @@ export const createCemetery = (scene: Scene) => {
       const p = panel.createInstance(`fence${n++}`);
       p.position.set(cx, 0.9, cz);
       p.rotation.y = side.rotY;
+      p.scaling.x = panelW;
       p.checkCollisions = true;
     }
-    for (let i = 0; i <= panelsPerSide; i++) {
+    for (let i = 0; i <= panels; i++) {
       const d = panelW * i;
       const px = side.origin[0] + side.dir[0] * d;
       const pz = side.origin[1] + side.dir[1] * d;
@@ -211,7 +214,7 @@ export const createCemetery = (scene: Scene) => {
   // stone gate pillars
   for (const sx of [-1, 1]) {
     const pillar = MeshBuilder.CreateBox(`gatePillar${sx}`, { width: 0.7, height: 2.6, depth: 0.7 }, scene);
-    pillar.position.set(sx * 2.75, 1.3, -PLOT_HALF);
+    pillar.position.set(sx * 2.75, 1.3, zMin);
     pillar.material = darkStoneMat;
     pillar.checkCollisions = true;
     const cap = MeshBuilder.CreateCylinder(
@@ -220,32 +223,32 @@ export const createCemetery = (scene: Scene) => {
       scene,
     );
     cap.rotation.y = Math.PI / 4;
-    cap.position.set(sx * 2.75, 2.85, -PLOT_HALF);
+    cap.position.set(sx * 2.75, 2.85, zMin);
     cap.material = darkStoneMat;
   }
   // iron arch over the gate
   const archPath: Vector3[] = [];
   for (let i = 0; i <= 16; i++) {
     const a = (i / 16) * Math.PI;
-    archPath.push(new Vector3(Math.cos(a) * 2.75, 3.05 + Math.sin(a) * 0.9, -PLOT_HALF));
+    archPath.push(new Vector3(Math.cos(a) * 2.75, 3.05 + Math.sin(a) * 0.9, zMin));
   }
   const arch = MeshBuilder.CreateTube("gateArch", { path: archPath, radius: 0.05, tessellation: 6 }, scene);
   arch.material = ironMat;
   const archCross = MeshBuilder.CreateBox("archCrossV", { width: 0.08, height: 0.6, depth: 0.06 }, scene);
-  archCross.position.set(0, 4.25, -PLOT_HALF);
+  archCross.position.set(0, 4.25, zMin);
   archCross.material = ironMat;
   const archCrossH = MeshBuilder.CreateBox("archCrossH", { width: 0.36, height: 0.08, depth: 0.06 }, scene);
-  archCrossH.position.set(0, 4.35, -PLOT_HALF);
+  archCrossH.position.set(0, 4.35, zMin);
   archCrossH.material = ironMat;
   // one gate leaf hanging open
   const leaf = MeshBuilder.CreatePlane("gateLeaf", { width: 2.3, height: 1.8, sideOrientation: Mesh.DOUBLESIDE }, scene);
   leaf.setPivotPoint(new Vector3(-1.15, 0, 0));
-  leaf.position.set(-1.2, 0.9, -PLOT_HALF);
+  leaf.position.set(-1.2, 0.9, zMin);
   leaf.rotation.y = -1.9;
   leaf.material = fenceMat;
 
   // ---------- mausoleum ----------
-  const mz = PLOT_HALF - 6.5;
+  const mz = zMax - 6.5;
   const addBox = (name: string, w: number, h: number, d: number, x: number, y: number, z: number, mat: StandardMaterial) => {
     const b = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, scene);
     b.position.set(x, y, z);
@@ -299,16 +302,18 @@ export const createCemetery = (scene: Scene) => {
     }
     return merge("deadTree", parts, barkMat);
   })();
+  // [fraction of xHalf, fraction along the plot, scale]
   const treeSpots: [number, number, number][] = [
-    [-15, 9, 1.1],
-    [17, -12, 0.9],
-    [-20, -17, 1.25],
-    [13, 15, 1.0],
-    [6, -21, 0.8],
+    [-0.7, 0.2, 1.1],
+    [0.75, 0.35, 0.9],
+    [-0.55, 0.55, 1.25],
+    [0.6, 0.7, 1.0],
+    [-0.8, 0.85, 0.8],
+    [0.85, 0.08, 1.1],
   ];
-  for (const [x, z, s] of treeSpots) {
+  for (const [fx, fz, s] of treeSpots) {
     const t = deadTree.createInstance(`deadTree${n++}`);
-    t.position.set(x, 0, z);
+    t.position.set(fx * xHalf, 0, zMin + fz * (zMax - zMin));
     t.rotation.y = rng() * Math.PI * 2;
     t.scaling.setAll(s);
     t.checkCollisions = true;
