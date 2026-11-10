@@ -1,136 +1,74 @@
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
-import { AppendSceneAsync } from "@babylonjs/core/Loading/sceneLoader";
-import { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera";
-import { ActionManager } from "@babylonjs/core/Actions/actionManager"
-import { ExecuteCodeAction } from "@babylonjs/core/Actions/directActions"
-import { Vector3, Vector4 } from "@babylonjs/core/Maths/math.vector"
-import { Axis } from "@babylonjs/core/Maths/math.axis"
-import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder"
-import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial"
-import { Texture } from "@babylonjs/core/Materials/Textures/texture"
+import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 // Side-effect imports: these register plugins and augment prototypes at load time
-import "@babylonjs/core/Loading/loadingScreen";
-import "@babylonjs/core/Helpers/sceneHelpers";
+import "@babylonjs/core/Collisions/collisionCoordinator";
 import "@babylonjs/core/Materials/standardMaterial";
-import "@babylonjs/core/Materials/PBR/pbrMaterial";
-import "@babylonjs/core/Materials/Textures/Loaders/envTextureLoader";
-import "@babylonjs/loaders/glTF";
-import * as BABYLON from '@babylonjs/core';
+import { createAtmosphere } from "./world/atmosphere";
+import { createCemetery, PLOT_HALF } from "./world/cemetery";
+import { createForest } from "./world/forest";
 
 const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
 const engine = new Engine(canvas, true);
 
 const fpsDiv = document.createElement("div");
 fpsDiv.id = "fps";
-fpsDiv.style.position = "absolute";
-fpsDiv.style.top = "10px";
-fpsDiv.style.right = "10px";
-fpsDiv.style.color = "white";
-fpsDiv.style.fontSize = "16px";
-fpsDiv.style.fontWeight = "bold";
-fpsDiv.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
-fpsDiv.style.padding = "5px 10px";
-fpsDiv.style.borderRadius = "5px";
-fpsDiv.style.fontFamily = "monospace";
-fpsDiv.style.pointerEvents = "none";
+Object.assign(fpsDiv.style, {
+  position: "absolute",
+  top: "10px",
+  right: "10px",
+  color: "white",
+  fontSize: "16px",
+  fontWeight: "bold",
+  backgroundColor: "rgba(0, 0, 0, 0.5)",
+  padding: "5px 10px",
+  borderRadius: "5px",
+  fontFamily: "monospace",
+  pointerEvents: "none",
+});
 document.body.appendChild(fpsDiv);
 
-const createScene = async () => {
+const createScene = () => {
   const scene = new Scene(engine);
+  scene.collisionsEnabled = true;
+  scene.gravity = new Vector3(0, -0.4, 0);
 
-  var inputMap ={};
-  scene.actionManager = new ActionManager(scene);
-  scene.actionManager.registerAction(new ExecuteCodeAction(ActionManager.OnKeyDownTrigger, function (evt) {								
-    inputMap[evt.sourceEvent.key] = evt.sourceEvent.type == "keydown";
-  }));
-  scene.actionManager.registerAction(new ExecuteCodeAction(ActionManager.OnKeyUpTrigger, function (evt) {								
-    inputMap[evt.sourceEvent.key] = evt.sourceEvent.type == "keydown";
-  }));
+  createAtmosphere(scene);
+  createCemetery(scene);
+  createForest(scene, PLOT_HALF * 1.6);
 
-  // Load a glTF model
-  await AppendSceneAsync("https://assets.babylonjs.com/meshes/boombox.glb", scene);
-  const plane = MeshBuilder.CreatePlane("plane", { width: 10, height: 10}, scene);
-  plane.position.y = 0;
-  const mat = new StandardMaterial("mat", scene);
-  mat.diffuseTexture = new Texture("./src/textures/grassTexture.jpg", scene);
-  plane.material = mat;
-  plane.rotation.x = Math.PI / 2;
+  // First-person camera: starts just outside the cemetery gate.
+  const cam = new UniversalCamera("player", new Vector3(0, 1.7, -PLOT_HALF - 8), scene);
+  cam.setTarget(new Vector3(0, 1.5, 0));
+  cam.minZ = 0.1;
+  cam.maxZ = 500;
+  cam.fov = 1.0;
+  cam.speed = 0.15;
+  cam.inertia = 0.6;
+  cam.angularSensibility = 2500;
+  cam.keysUp = [87, 38]; // W, Up
+  cam.keysDown = [83, 40]; // S, Down
+  cam.keysLeft = [65, 37]; // A, Left
+  cam.keysRight = [68, 39]; // D, Right
+  cam.checkCollisions = true;
+  cam.applyGravity = true;
+  cam.ellipsoid = new Vector3(0.35, 0.85, 0.35); // ~1.7m eye height
+  cam.attachControl(canvas, true);
 
-  const light = new BABYLON.HemisphericLight("light", new Vector3(0, 1, 0), scene);
-
-  // Create a default camera that frames the loaded model
-  scene.createDefaultCamera(false, true, true);
-  const cam = scene.activeCamera as UniversalCamera;
-  cam.position.y = 1;
-  const camY = cam.position.y;
-  console.log(cam.position);
-
-  // WASD + Mouse Look
-  cam.inertia = 0;
-  cam.getDirection(Axis.Z)
-  cam.getDirection(Axis.Z).negate()
-  cam.getDirection(Axis.X)
-  cam.getDirection(Axis.X).negate()
-  const speed = 1/100;
-  scene.onBeforeRenderObservable.add(() => {
-    if (keys["w"]) {
-        const forward = cam.getDirection(Axis.Z);
-        cam.position.addInPlace(forward.scale(speed));
-    }
-    if (keys["s"]) {
-        const backward = cam.getDirection(Axis.Z);
-        cam.position.addInPlace(backward.scale(-speed));
-    }
-    if (keys["d"]) {
-        const right = cam.getDirection(Axis.X);
-        cam.position.addInPlace(right.scale(speed));
-    }
-    if (keys["a"]) {
-        const left = cam.getDirection(Axis.X);
-        cam.position.addInPlace(left.scale(-speed));
-    }
-    cam.position.y = camY;
-});
-  // Pointer Lock
+  // Click to capture the mouse for free look (Esc releases it).
   canvas.addEventListener("click", () => {
-    canvas.requestPointerLock();
-  });
-
-  const keys: { [key: string]: boolean } = {};
-  window.addEventListener("keydown", (e) => keys[e.key.toLowerCase()] = true);
-  window.addEventListener("keyup", (e) => keys[e.key.toLowerCase()] = false);
-
-  scene.onBeforeRenderObservable.add(() => {
-    const speed = 0.1;
-    if (keys["w"]) cam.inertialRadiusOffset -= speed * 0.1;
-    if (keys["s"]) cam.inertialRadiusOffset += speed * 0.1;
-    if (keys["a"]) cam.inertialAlphaOffset -= speed * 0.1;
-    if (keys["d"]) cam.inertialAlphaOffset += speed * 0.1;
-  });
-
-  // Mouse rotation without click
-  window.addEventListener("mousemove", (e) => {
-    if (document.pointerLockElement === canvas) {
-      cam.alpha += e.movementX * 0.005;
-      cam.beta += e.movementY * 0.005;
-    }
-  });
-
-  // Create a default environment (skybox + ground + environment lighting)
-  scene.createDefaultEnvironment({
-    createGround: true,
-    createSkybox: true,
+    if (!engine.isPointerLock) engine.enterPointerlock();
   });
 
   return scene;
 };
 
-createScene().then((scene) => {
-  engine.runRenderLoop(() => {
-    scene.render();
-    fpsDiv.innerText = `${engine.getFps().toFixed()} FPS`;
-  });
+const scene = createScene();
+if (import.meta.env.DEV) (window as unknown as { scene: Scene }).scene = scene; // handy for console debugging
+engine.runRenderLoop(() => {
+  scene.render();
+  fpsDiv.innerText = `${engine.getFps().toFixed()} FPS`;
 });
 
 window.addEventListener("resize", () => {
