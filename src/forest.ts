@@ -24,9 +24,9 @@ function paintTexture(
   height: number,
   draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void,
 ) {
+  // Left at the default clamp addressing: wrapping makes filtering at the top edge sample
+  // the trunk at the bottom, which floats as a small cross above every tree
   const tex = new DynamicTexture(name, { width, height }, scene, true, Texture.BILINEAR_SAMPLINGMODE);
-  tex.wrapU = Texture.WRAP_ADDRESSMODE; // DynamicTexture defaults to clamp
-  tex.wrapV = Texture.WRAP_ADDRESSMODE;
   const ctx = tex.getContext() as CanvasRenderingContext2D;
   ctx.clearRect(0, 0, width, height);
   draw(ctx, width, height);
