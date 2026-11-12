@@ -1,22 +1,8 @@
 /**
- * Melancholic background ambience, generated with Web Audio so there is no audio file to
- * download or license: a soft wind bed, a slow minor-key pad, and sparse chime notes,
- * all sent through a long synthetic reverb.
+ * Distant storm ambience, generated with Web Audio so there is no audio file to download
+ * or license: a low gusting wind bed, plus far-off thunder rolling in at random intervals,
+ * all sent through a long synthetic reverb so it sounds miles away.
  */
-
-const midiToHz = (note: number) => 440 * 2 ** ((note - 69) / 12);
-
-// Am – Fmaj7 – C – Em, voiced low and close; each chord swells in and out over ~10 s
-const CHORDS = [
-  [45, 52, 57, 60],
-  [41, 48, 52, 57],
-  [48, 55, 60, 64],
-  [40, 47, 52, 55],
-];
-const CHORD_SECONDS = 10;
-// A minor pentatonic, upper register, for the occasional chime
-const CHIME_NOTES = [69, 72, 74, 76, 79, 81];
-
 export class Ambience {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -33,35 +19,21 @@ export class Ambience {
     this.master.connect(ctx.destination);
     this.applyVolume();
 
+    const noise = this.brownNoise(ctx, 8);
     const reverb = ctx.createConvolver();
-    reverb.buffer = this.impulseResponse(ctx, 5);
+    reverb.buffer = this.impulseResponse(ctx, 6);
     const wet = ctx.createGain();
-    wet.gain.value = 0.6;
+    wet.gain.value = 0.8;
     reverb.connect(wet).connect(this.master);
 
-    this.startWind(ctx);
-
-    const pad = ctx.createBiquadFilter();
-    pad.type = "lowpass";
-    pad.frequency.value = 900;
-    pad.connect(this.master);
-    pad.connect(reverb);
-    const chimes = ctx.createGain();
-    chimes.connect(this.master);
-    chimes.connect(reverb);
+    this.startWind(ctx, noise);
 
     // Schedule a little ahead of the audio clock so timing never depends on frame rate
-    let chordIndex = 0;
-    let nextChordAt = ctx.currentTime + 0.5;
-    let nextChimeAt = ctx.currentTime + 4;
+    let nextThunderAt = ctx.currentTime + 3 + Math.random() * 4;
     const schedule = () => {
-      while (nextChordAt < ctx.currentTime + 2) {
-        this.playChord(ctx, pad, CHORDS[chordIndex++ % CHORDS.length], nextChordAt);
-        nextChordAt += CHORD_SECONDS;
-      }
-      while (nextChimeAt < ctx.currentTime + 2) {
-        this.playChime(ctx, chimes, nextChimeAt);
-        nextChimeAt += 3 + Math.random() * 6;
+      while (nextThunderAt < ctx.currentTime + 2) {
+        this.playThunder(ctx, noise, reverb, nextThunderAt);
+        nextThunderAt += 8 + Math.random() * 14;
       }
     };
     schedule();
@@ -82,32 +54,25 @@ export class Ambience {
 
   private applyVolume() {
     if (!this.ctx || !this.master) return;
-    const target = this.muted ? 0 : this.ducked ? 0.12 : 0.7;
+    const target = this.muted ? 0 : this.ducked ? 0.12 : 0.8;
     this.master.gain.setTargetAtTime(target, this.ctx.currentTime, 0.8);
   }
 
-  // Low, gently gusting wind: brown noise through a lowpass whose cutoff and level drift
-  private startWind(ctx: AudioContext) {
-    const buffer = ctx.createBuffer(1, ctx.sampleRate * 4, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    let last = 0;
-    for (let i = 0; i < data.length; i++) {
-      last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02;
-      data[i] = last * 3.5;
-    }
+  // Low wind: brown noise through a lowpass whose cutoff and level drift slowly
+  private startWind(ctx: AudioContext, noise: AudioBuffer) {
     const source = ctx.createBufferSource();
-    source.buffer = buffer;
+    source.buffer = noise;
     source.loop = true;
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
-    filter.frequency.value = 350;
+    filter.frequency.value = 320;
     const volume = ctx.createGain();
     volume.gain.value = 0.3;
 
     const sweep = ctx.createOscillator();
     sweep.frequency.value = 0.05;
     const sweepDepth = ctx.createGain();
-    sweepDepth.gain.value = 150;
+    sweepDepth.gain.value = 140;
     sweep.connect(sweepDepth).connect(filter.frequency);
     const gust = ctx.createOscillator();
     gust.frequency.value = 0.08;
@@ -121,42 +86,47 @@ export class Ambience {
     gust.start();
   }
 
-  private playChord(ctx: AudioContext, out: AudioNode, notes: number[], at: number) {
-    const end = at + CHORD_SECONDS + 4;
-    for (const note of notes) {
-      // Two slightly detuned voices per note give a soft, chorused pad
-      for (const detune of [-6, 6]) {
-        const osc = ctx.createOscillator();
-        osc.type = "triangle";
-        osc.frequency.value = midiToHz(note);
-        osc.detune.value = detune;
-        const env = ctx.createGain();
-        env.gain.setValueAtTime(0, at);
-        env.gain.linearRampToValueAtTime(0.035, at + 4);
-        env.gain.setValueAtTime(0.035, at + CHORD_SECONDS - 1);
-        env.gain.linearRampToValueAtTime(0, end);
-        osc.connect(env).connect(out);
-        osc.start(at);
-        osc.stop(end);
-      }
-    }
-  }
-
-  private playChime(ctx: AudioContext, out: AudioNode, at: number) {
-    const note = CHIME_NOTES[Math.floor(Math.random() * CHIME_NOTES.length)];
-    const osc = ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.value = midiToHz(note);
+  // One far-off thunder roll: heavily low-passed noise that swells, rumbles a few times, and fades
+  private playThunder(ctx: AudioContext, noise: AudioBuffer, reverb: AudioNode, at: number) {
+    const source = ctx.createBufferSource();
+    source.buffer = noise;
+    source.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 80 + Math.random() * 140;
     const env = ctx.createGain();
+    const peak = 0.5 + Math.random() * 0.5;
+    const duration = 5 + Math.random() * 5;
+
     env.gain.setValueAtTime(0, at);
-    env.gain.linearRampToValueAtTime(0.05, at + 0.02);
-    env.gain.exponentialRampToValueAtTime(0.0001, at + 4);
-    osc.connect(env).connect(out);
-    osc.start(at);
-    osc.stop(at + 4);
+    env.gain.linearRampToValueAtTime(peak, at + 0.4 + Math.random() * 1.2);
+    let t = at + 1.5;
+    while (t < at + duration - 1.5) {
+      env.gain.setTargetAtTime(peak * (0.25 + Math.random() * 0.6), t, 0.3);
+      t += 0.6 + Math.random() * 1.2;
+    }
+    env.gain.setTargetAtTime(0, t, duration / 5);
+
+    source.connect(filter).connect(env);
+    env.connect(this.master!);
+    env.connect(reverb);
+    source.start(at, Math.random() * noise.duration);
+    source.stop(t + duration);
   }
 
-  // Exponentially decaying stereo noise: a cheap, convincing large-room reverb
+  // Brown noise: integrated white noise, deep and soft rather than hissy
+  private brownNoise(ctx: AudioContext, seconds: number) {
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * seconds, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < data.length; i++) {
+      last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02;
+      data[i] = last * 3.5;
+    }
+    return buffer;
+  }
+
+  // Exponentially decaying stereo noise: a cheap, convincing large-space reverb
   private impulseResponse(ctx: AudioContext, seconds: number) {
     const length = ctx.sampleRate * seconds;
     const impulse = ctx.createBuffer(2, length, ctx.sampleRate);

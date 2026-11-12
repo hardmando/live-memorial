@@ -21,25 +21,30 @@ import { formatDate, games, lifespanDays, type Game } from "./games";
 import { Ambience } from "./ambience";
 
 const EYE_HEIGHT = 1.7;
-const AISLE_HALF_WIDTH = 2.5;
-const ROW_SPACING = 4;
-const FIRST_ROW_Z = 4;
+/** Cemetery fence bounds; the closed gate is centred on the near (min z) side */
+const BOUNDS = { minX: -14, maxX: 14, minZ: -1, maxZ: 28 };
+const GATE_HALF_WIDTH = 1.4;
+/** Graves sit in loose rows, in column bands either side of the central path */
+const COLUMNS = [-10.5, -5, 3, 8.5];
+const FIRST_ROW_Z = 6;
+const ROW_SPACING = 5.5;
+const LAYOUT_SEED = 1932;
 const INTERACT_DISTANCE = 2.4;
 const STONE_RADIUS = 0.7;
+const TV_RADIUS = 0.6;
 const MAX_CANDLES_PER_STONE = 12;
 const STONE_HEX = "#787a7d";
 const STORM_HEX = "#6b6e73";
 const STORM = Color3.FromHexString(STORM_HEX);
-/** Uniform scale of the TV and its crate, relative to the modelled size */
-const TV_SCALE = 1.75;
-const TV_RADIUS = 0.9;
-/** TV sits beside its headstone, this far along the aisle */
-const TV_OFFSET_Z = 1.6;
-/** TV screen size in metres and the CSS size of the trailer iframe mapped onto it */
-const SCREEN_W = 0.48 * TV_SCALE;
-const SCREEN_H = 0.36 * TV_SCALE;
+/** The plasma TV stands this far to the right of its headstone */
+const TV_OFFSET_X = 1.5;
+/** 16:9 plasma screen: size and position in TV-local metres, and the CSS size of the trailer iframe */
+const SCREEN_W = 0.93;
+const SCREEN_H = (SCREEN_W * 9) / 16;
+const SCREEN_Y = 1.3;
+const SCREEN_Z = -0.046;
 const IFRAME_W = 640;
-const IFRAME_H = 480;
+const IFRAME_H = 360;
 
 const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
 const fpsDiv = document.getElementById("fps")!;
@@ -50,13 +55,68 @@ const ambience = new Ambience();
 
 interface Grave {
   game: Game;
-  position: Vector3;
-  /** Unit vector the engraved face points along (towards the aisle) */
-  front: Vector3;
+  /** Headstone world transform, including its random lean and sink */
+  stoneMatrix: Matrix;
+  /** Upright transform at the headstone's foot, for placing candles on the ground */
+  groundMatrix: Matrix;
+  tvMatrix: Matrix;
+  stonePosition: Vector3;
+  tvPosition: Vector3;
+  /** Point between stone and TV that counts as "standing at the grave" */
+  focus: Vector3;
   /** Candles drawn so far; capped so the instance count stays bounded */
   candles: number;
   /** World-space corners of the TV screen: top-left, top-right, bottom-right, bottom-left */
   screen: Vector3[];
+}
+
+/** Small seeded PRNG so the "natural" layout is identical on every visit */
+function mulberry32(seed: number) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Loose rows facing the gate, oldest shutdowns nearest; each stone a little off-line,
+// turned, leaning and sunk, like a cemetery that has settled over the years.
+function layoutGraves(): Grave[] {
+  const random = mulberry32(LAYOUT_SEED);
+  const jitter = (amount: number) => (random() * 2 - 1) * amount;
+  return games.map((game, i) => {
+    const row = Math.floor(i / COLUMNS.length);
+    const stonePosition = new Vector3(
+      COLUMNS[i % COLUMNS.length] + jitter(0.6),
+      -random() * 0.08,
+      FIRST_ROW_Z + row * ROW_SPACING + jitter(0.9),
+    );
+    const yaw = jitter(0.25);
+    const lean = Quaternion.RotationYawPitchRoll(yaw, jitter(0.06), jitter(0.06));
+    const stoneMatrix = Matrix.Compose(Vector3.One(), lean, stonePosition);
+    const ground = new Vector3(stonePosition.x, 0, stonePosition.z);
+    const groundMatrix = Matrix.Compose(Vector3.One(), Quaternion.RotationYawPitchRoll(yaw, 0, 0), ground);
+
+    // TV to the stone's right, turned back towards someone standing in front of the stone
+    const tvPosition = Vector3.TransformCoordinates(new Vector3(TV_OFFSET_X, 0, jitter(0.2)), groundMatrix);
+    const tvRotation = Quaternion.RotationYawPitchRoll(yaw + 0.35 + jitter(0.1), 0, 0);
+    const tvMatrix = Matrix.Compose(Vector3.One(), tvRotation, tvPosition);
+    const corner = (x: number, y: number) =>
+      Vector3.TransformCoordinates(new Vector3(x * SCREEN_W, SCREEN_Y + y * SCREEN_H, SCREEN_Z), tvMatrix);
+
+    return {
+      game,
+      stoneMatrix,
+      groundMatrix,
+      tvMatrix,
+      stonePosition,
+      tvPosition,
+      focus: Vector3.Center(ground, tvPosition),
+      candles: 0,
+      screen: [corner(-0.5, 0.5), corner(0.5, 0.5), corner(0.5, -0.5), corner(-0.5, -0.5)],
+    };
+  });
 }
 
 function loadRespects(): Record<string, number> {
@@ -157,30 +217,75 @@ function createStormSky(scene: Scene) {
   return dome;
 }
 
-// Shared animated TV static. Tiny and point-sampled, so updating it is cheap.
-function createStatic(scene: Scene) {
-  const w = 64;
-  const h = 48;
-  const tex = new DynamicTexture("static", { width: w, height: h }, scene, false, Texture.NEAREST_SAMPLINGMODE);
+// The idle plasma screen: the familiar blue "NO SIGNAL" of a 2000s flat panel. Drawn once.
+function createNoSignal(scene: Scene) {
+  const w = 512;
+  const h = 288;
+  const tex = new DynamicTexture("noSignal", { width: w, height: h }, scene, true);
   const ctx = tex.getContext() as CanvasRenderingContext2D;
-  const image = ctx.createImageData(w, h);
-  return {
-    tex,
-    redraw() {
-      const d = image.data;
-      for (let y = 0; y < h; y++) {
-        const scanline = y % 2 === 0 ? 1 : 0.6;
-        for (let x = 0; x < w; x++) {
-          const v = Math.random() * 200 * scanline;
-          const i = (y * w + x) * 4;
-          d[i] = d[i + 1] = d[i + 2] = v;
-          d[i + 3] = 255;
-        }
-      }
-      ctx.putImageData(image, 0, 0);
-      tex.update();
-    },
+  ctx.fillStyle = "#1a2b9c";
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.fillRect(w * 0.3, h * 0.42, w * 0.4, h * 0.16);
+  ctx.fillStyle = "#e8ecff";
+  ctx.font = `bold ${h * 0.08}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("NO SIGNAL", w / 2, h / 2);
+  tex.update();
+  return tex;
+}
+
+// Wrought-iron fence round the cemetery, with stone pillars and a closed double gate.
+// Every bar and rail is one unit cube scaled per instance, so the whole fence is one draw call.
+function createFence(scene: Scene, ironMat: StandardMaterial, stoneMat: StandardMaterial) {
+  const { minX, maxX, minZ, maxZ } = BOUNDS;
+  const unitCube = (name: string) => {
+    const box = CreateBox(name, { size: 1 }, scene);
+    box.bakeTransformIntoVertices(Matrix.Translation(0, 0.5, 0));
+    return box;
   };
+  const iron = unitCube("iron");
+  iron.material = ironMat;
+  const pillars = unitCube("pillars");
+  pillars.material = stoneMat;
+
+  const ironMatrices: Matrix[] = [];
+  const pillarMatrices: Matrix[] = [];
+  const piece = (out: Matrix[], x: number, y: number, z: number, sx: number, sy: number, sz: number) =>
+    out.push(Matrix.Scaling(sx, sy, sz).multiply(Matrix.Translation(x, y, z)));
+  const gatePillarX = GATE_HALF_WIDTH + 0.25;
+
+  // Bars and rails along a straight side; `along` picks the axis the side runs on
+  const side = (from: number, to: number, fixed: number, along: "x" | "z") => {
+    const at = (t: number, y: number, sx: number, sy: number, sz: number) =>
+      along === "x" ? piece(ironMatrices, t, y, fixed, sx, sy, sz) : piece(ironMatrices, fixed, y, t, sz, sy, sx);
+    for (let t = from; t <= to; t += 0.18) at(t, 0, 0.025, 1.6, 0.025);
+    const mid = (from + to) / 2;
+    for (const y of [0.15, 1.45]) at(mid, y, to - from, 0.04, 0.04);
+  };
+  side(minX, -gatePillarX - 0.25, minZ, "x");
+  side(gatePillarX + 0.25, maxX, minZ, "x");
+  side(minX, maxX, maxZ, "x");
+  side(minZ, maxZ, minX, "z");
+  side(minZ, maxZ, maxX, "z");
+
+  // Closed gate: taller bars, a heavier middle stile where the two leaves meet, three rails
+  for (let x = -GATE_HALF_WIDTH; x <= GATE_HALF_WIDTH + 0.01; x += 0.14) piece(ironMatrices, x, 0, minZ, 0.03, 2.0, 0.03);
+  piece(ironMatrices, -0.03, 0, minZ, 0.06, 2.1, 0.06);
+  piece(ironMatrices, 0.03, 0, minZ, 0.06, 2.1, 0.06);
+  for (const y of [0.15, 1.0, 1.85]) piece(ironMatrices, 0, y, minZ, GATE_HALF_WIDTH * 2, 0.06, 0.05);
+
+  for (const x of [-gatePillarX, gatePillarX]) piece(pillarMatrices, x, 0, minZ, 0.5, 2.5, 0.5);
+  for (const [x, z] of [[minX, minZ], [maxX, minZ], [minX, maxZ], [maxX, maxZ]]) {
+    piece(pillarMatrices, x, 0, z, 0.4, 1.9, 0.4);
+  }
+
+  iron.thinInstanceAdd(ironMatrices);
+  iron.thinInstanceRefreshBoundingInfo();
+  pillars.thinInstanceAdd(pillarMatrices);
+  pillars.thinInstanceRefreshBoundingInfo();
+  return [iron, pillars];
 }
 
 /**
@@ -217,39 +322,31 @@ function createScene() {
   daylight.intensity = 1;
   daylight.diffuse = new Color3(0.72, 0.74, 0.78);
   daylight.groundColor = new Color3(0.22, 0.22, 0.25);
-  daylight.specular = Color3.Black();
+  daylight.specular = new Color3(0.5, 0.5, 0.55);
 
   const sky = createStormSky(scene);
+  const graves = layoutGraves();
+  const { minX, maxX, minZ, maxZ } = BOUNDS;
 
-  const graves: Grave[] = games.map((game, i) => {
-    const side = i % 2 === 0 ? -1 : 1;
-    return {
-      game,
-      position: new Vector3(side * AISLE_HALF_WIDTH, 0, FIRST_ROW_Z + Math.floor(i / 2) * ROW_SPACING),
-      front: new Vector3(-side, 0, 0),
-      candles: 0,
-      screen: [],
-    };
-  });
-  const aisleLength = FIRST_ROW_Z + Math.ceil(games.length / 2) * ROW_SPACING;
-
-  // Ground and path
+  // Ground runs well past the fence into the fog; the path leads from the gate to the back
+  const groundW = 60;
+  const groundD = 70;
   const grassMat = new StandardMaterial("grass", scene);
   const grassTex = new Texture(grassTextureUrl, scene);
-  grassTex.uScale = 7;
-  grassTex.vScale = (aisleLength + 10) / 2;
+  grassTex.uScale = groundW / 2;
+  grassTex.vScale = groundD / 2;
   grassMat.diffuseTexture = grassTex;
   grassMat.diffuseColor = new Color3(0.8, 0.85, 0.8);
   grassMat.specularColor = Color3.Black();
-  const grass = CreateGround("grass", { width: 14, height: aisleLength + 10 }, scene);
-  grass.position.z = aisleLength / 2;
+  const grass = CreateGround("grass", { width: groundW, height: groundD }, scene);
+  grass.position.z = (minZ + maxZ) / 2;
   grass.material = grassMat;
 
   const pathMat = new StandardMaterial("path", scene);
   pathMat.diffuseColor = new Color3(0.22, 0.19, 0.16);
   pathMat.specularColor = Color3.Black();
-  const path = CreateGround("path", { width: 1.6, height: aisleLength + 6 }, scene);
-  path.position.set(0, 0.01, aisleLength / 2 - 1);
+  const path = CreateGround("path", { width: 1.6, height: maxZ - minZ - 1 }, scene);
+  path.position.set(0, 0.01, (minZ + maxZ - 1) / 2);
   path.material = pathMat;
 
   // Headstones: one mesh drawn once per grave via thin instances
@@ -264,39 +361,37 @@ function createScene() {
   stoneMat.specularColor = new Color3(0.05, 0.05, 0.05);
   stone.material = stoneMat;
 
-  // CRT TVs on crates beside each stone, built the same way: shared meshes, thin instances
-  const crate = CreateBox("crate", { width: 0.6, height: 0.5, depth: 0.5 }, scene);
-  crate.bakeTransformIntoVertices(Matrix.Translation(0, 0.25, 0));
-  const crateMat = new StandardMaterial("crate", scene);
-  crateMat.diffuseColor = new Color3(0.3, 0.22, 0.15);
-  crateMat.specularColor = Color3.Black();
-  crate.material = crateMat;
+  const ironMat = new StandardMaterial("iron", scene);
+  ironMat.diffuseColor = new Color3(0.08, 0.08, 0.09);
+  ironMat.specularColor = new Color3(0.2, 0.2, 0.2);
+  const fence = createFence(scene, ironMat, stoneMat);
 
-  const tvFront = CreateBox("tvFront", { width: 0.62, height: 0.5, depth: 0.45 }, scene);
-  tvFront.position.y = 0.75;
-  const tvTube = CreateBox("tvTube", { width: 0.42, height: 0.36, depth: 0.25 }, scene);
-  tvTube.position.set(0, 0.74, 0.33);
-  const tv = Mesh.MergeMeshes([tvFront, tvTube], true)!;
+  // 2000s plasma TVs on pedestal stands: glossy black panel and stand, silver speaker bar
+  const standBase = CreateBox("tvBase", { width: 0.5, height: 0.04, depth: 0.35 }, scene);
+  standBase.position.y = 0.02;
+  const standNeck = CreateBox("tvNeck", { width: 0.1, height: 0.85, depth: 0.06 }, scene);
+  standNeck.position.set(0, 0.465, 0.04);
+  const panel = CreateBox("tvPanel", { width: 1.04, height: 0.66, depth: 0.09 }, scene);
+  panel.position.y = SCREEN_Y;
+  const tv = Mesh.MergeMeshes([standBase, standNeck, panel], true)!;
   const tvMat = new StandardMaterial("tv", scene);
-  tvMat.diffuseColor = new Color3(0.16, 0.16, 0.17);
-  tvMat.specularColor = new Color3(0.15, 0.15, 0.15);
+  tvMat.diffuseColor = new Color3(0.04, 0.04, 0.05);
+  tvMat.specularColor = new Color3(0.6, 0.6, 0.65);
+  tvMat.specularPower = 64;
   tv.material = tvMat;
 
-  // Engravings and TV screens: one quad per grave each, merged into single meshes
+  const speaker = CreateBox("tvSpeaker", { width: 1.04, height: 0.08, depth: 0.09 }, scene);
+  speaker.bakeTransformIntoVertices(Matrix.Translation(0, SCREEN_Y - 0.37, 0));
+  const speakerMat = new StandardMaterial("tvSpeaker", scene);
+  speakerMat.diffuseColor = new Color3(0.58, 0.6, 0.63);
+  speakerMat.specularColor = new Color3(0.5, 0.5, 0.5);
+  speaker.material = speakerMat;
+
+  // Engravings and TV screens: one quad per grave each, baked into place and merged
   const cols = 4;
   const { atlas, rows } = createEpitaphAtlas(scene, cols, 512);
-  const stoneMatrices: Matrix[] = [];
-  const tvMatrices: Matrix[] = [];
-  const faces: Mesh[] = [];
-  const screens: Mesh[] = [];
-  graves.forEach((grave, i) => {
-    // Front faces -z by default; turn it to face the aisle
-    const rotation = Quaternion.RotationAxis(Vector3.Up(), Math.atan2(-grave.front.x, -grave.front.z));
-    stoneMatrices.push(Matrix.Compose(Vector3.One(), rotation, grave.position));
-
+  const faces = graves.map((grave, i) => {
     const face = CreatePlane(`face${i}`, { size: 1.0 }, scene);
-    face.rotationQuaternion = rotation;
-    face.position = grave.position.add(grave.front.scale(0.126)).addInPlaceFromFloats(0, 0.85, 0);
     const col = i % cols;
     const row = Math.floor(i / cols);
     const uvs = face.getVerticesData(VertexBuffer.UVKind)!;
@@ -305,34 +400,21 @@ function createScene() {
       uvs[v + 1] = 1 - (row + 1 - uvs[v + 1]) / rows;
     }
     face.setVerticesData(VertexBuffer.UVKind, uvs);
-    faces.push(face);
-
-    // The TV stands beside the stone, angled back towards visitors coming up the aisle
-    const tvFacing = grave.front.add(new Vector3(0, 0, -0.5)).normalize();
-    const tvRotation = Quaternion.RotationAxis(Vector3.Up(), Math.atan2(-tvFacing.x, -tvFacing.z));
-    const tvPosition = grave.position.add(new Vector3(0, 0, TV_OFFSET_Z));
-    tvMatrices.push(Matrix.Compose(new Vector3(TV_SCALE, TV_SCALE, TV_SCALE), tvRotation, tvPosition));
-
-    const screenCenter = tvPosition.add(tvFacing.scale(0.226 * TV_SCALE)).addInPlaceFromFloats(0, 0.76 * TV_SCALE, 0);
-    const right = Vector3.Cross(tvFacing, Vector3.Up()).scaleInPlace(SCREEN_W / 2);
-    const up = new Vector3(0, SCREEN_H / 2, 0);
-    grave.screen = [
-      screenCenter.subtract(right).addInPlace(up),
-      screenCenter.add(right).addInPlace(up),
-      screenCenter.add(right).subtractInPlace(up),
-      screenCenter.subtract(right).subtractInPlace(up),
-    ];
-    const screen = CreatePlane(`screen${i}`, { width: SCREEN_W, height: SCREEN_H }, scene);
-    screen.rotationQuaternion = tvRotation;
-    screen.position = screenCenter;
-    screens.push(screen);
+    face.bakeTransformIntoVertices(Matrix.Translation(0, 0.85, -0.126).multiply(grave.stoneMatrix));
+    return face;
   });
-  stone.thinInstanceAdd(stoneMatrices);
+  const screens = graves.map((grave, i) => {
+    const screen = CreatePlane(`screen${i}`, { width: SCREEN_W, height: SCREEN_H }, scene);
+    screen.bakeTransformIntoVertices(Matrix.Translation(0, SCREEN_Y, SCREEN_Z).multiply(grave.tvMatrix));
+    return screen;
+  });
+
+  stone.thinInstanceAdd(graves.map((g) => g.stoneMatrix));
   stone.thinInstanceRefreshBoundingInfo();
-  crate.thinInstanceAdd(tvMatrices);
-  crate.thinInstanceRefreshBoundingInfo();
-  tv.thinInstanceAdd(tvMatrices);
-  tv.thinInstanceRefreshBoundingInfo();
+  for (const mesh of [tv, speaker]) {
+    mesh.thinInstanceAdd(graves.map((g) => g.tvMatrix));
+    mesh.thinInstanceRefreshBoundingInfo();
+  }
 
   const engravings = Mesh.MergeMeshes(faces, true)!;
   const engravingMat = new StandardMaterial("engraving", scene);
@@ -340,12 +422,11 @@ function createScene() {
   engravingMat.specularColor = stoneMat.specularColor;
   engravings.material = engravingMat;
 
-  const tvStatic = createStatic(scene);
   const screenMesh = Mesh.MergeMeshes(screens, true)!;
   const screenMat = new StandardMaterial("screen", scene);
   screenMat.disableLighting = true;
   screenMat.diffuseColor = Color3.Black();
-  screenMat.emissiveTexture = tvStatic.tex;
+  screenMat.emissiveTexture = createNoSignal(scene);
   screenMesh.material = screenMat;
 
   // Candles left as respects
@@ -367,10 +448,9 @@ function createScene() {
   const addCandle = (grave: Grave) => {
     if (grave.candles >= MAX_CANDLES_PER_STONE) return;
     const slot = grave.candles++;
-    const side = Vector3.Cross(Vector3.Up(), grave.front);
-    const base = grave.position
-      .add(grave.front.scale(0.4 + Math.floor(slot / 6) * 0.15))
-      .addInPlace(side.scale(((slot % 6) - 2.5) * 0.16));
+    // Two rows of six on the ground in front of the stone
+    const local = new Vector3(((slot % 6) - 2.5) * 0.16, 0, -0.4 - Math.floor(slot / 6) * 0.15);
+    const base = Vector3.TransformCoordinates(local, grave.groundMatrix);
     candle.thinInstanceAdd(Matrix.Translation(base.x, 0.09, base.z));
     flame.thinInstanceAdd(Matrix.Translation(base.x, 0.215, base.z));
     candle.setEnabled(true);
@@ -382,12 +462,14 @@ function createScene() {
     for (let i = 0; i < Math.min(respects[grave.game.name] ?? 0, MAX_CANDLES_PER_STONE); i++) addCandle(grave);
   }
 
-  for (const mesh of [grass, path, stone, engravings, crate, tv, screenMesh]) mesh.freezeWorldMatrix();
-  for (const mat of [grassMat, pathMat, stoneMat, engravingMat, crateMat, tvMat, candleMat]) mat.freeze();
+  for (const mesh of [grass, path, stone, engravings, tv, speaker, screenMesh, ...fence]) mesh.freezeWorldMatrix();
+  for (const mat of [grassMat, pathMat, stoneMat, ironMat, engravingMat, tvMat, speakerMat, screenMat, candleMat]) {
+    mat.freeze();
+  }
 
   // First-person camera: WASD to walk, click to lock the pointer for mouse look
-  const cam = new UniversalCamera("camera", new Vector3(0, EYE_HEIGHT, -2), scene);
-  cam.setTarget(new Vector3(0, EYE_HEIGHT, 10));
+  const cam = new UniversalCamera("camera", new Vector3(0, EYE_HEIGHT, minZ + 1.5), scene);
+  cam.setTarget(new Vector3(0, EYE_HEIGHT, maxZ));
   cam.attachControl(canvas, true);
   cam.inertia = 0;
   cam.speed = 1;
@@ -397,16 +479,16 @@ function createScene() {
   cam.keysDown = [83]; // S
   cam.keysLeft = [65]; // A
   cam.keysRight = [68]; // D
-  const obstacles = graves.flatMap(({ position }) => [
-    { center: position, radius: STONE_RADIUS },
-    { center: position.add(new Vector3(0, 0, TV_OFFSET_Z)), radius: TV_RADIUS },
+  const obstacles = graves.flatMap((g) => [
+    { center: g.stonePosition, radius: STONE_RADIUS },
+    { center: g.tvPosition, radius: TV_RADIUS },
   ]);
   cam.onAfterCheckInputsObservable.add(() => {
     const p = cam.position;
-    // Walk on the ground, stay inside the graveyard, and don't pass through stones or TVs
+    // Walk on the ground, stay inside the fence (the gate is shut), don't pass through stones or TVs
     p.y = EYE_HEIGHT;
-    p.x = Math.min(Math.max(p.x, -6), 6);
-    p.z = Math.min(Math.max(p.z, -4), aisleLength + 4);
+    p.x = Math.min(Math.max(p.x, minX + 0.5), maxX - 0.5);
+    p.z = Math.min(Math.max(p.z, minZ + 0.5), maxZ - 0.5);
     for (const { center, radius } of obstacles) {
       const dx = p.x - center.x;
       const dz = p.z - center.z;
@@ -475,13 +557,11 @@ function createScene() {
     plaque.querySelector(".actions")!.textContent = `${respectsHint} · ${tvHint}`;
   };
 
-  let frame = 0;
   scene.onBeforeRenderObservable.add(() => {
     let closest: Grave | null = null;
     let closestDist = INTERACT_DISTANCE;
     for (const grave of graves) {
-      // Measure from between the stone and its TV, so both count as "at the grave"
-      const dist = Math.hypot(cam.position.x - grave.position.x, cam.position.z - (grave.position.z + TV_OFFSET_Z / 2));
+      const dist = Math.hypot(cam.position.x - grave.focus.x, cam.position.z - grave.focus.z);
       if (dist < closestDist) {
         closest = grave;
         closestDist = dist;
@@ -498,7 +578,6 @@ function createScene() {
     const t = performance.now() / 1000;
     const flicker = 0.85 + 0.15 * Math.sin(t * 13) * Math.sin(t * 7.3);
     flameMat.emissiveColor.set(flicker, 0.65 * flicker, 0.25 * flicker);
-    if (frame++ % 3 === 0) tvStatic.redraw();
     sky.rotation.y = t * 0.004;
   });
 
