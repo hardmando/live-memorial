@@ -341,6 +341,29 @@ function createScene() {
   path.position.set(0, 0.01, (minZ + maxZ - 1) / 2);
   path.material = pathMat;
 
+  // A narrow trail in front of each row of graves, crossing the main path and wandering a
+  // little like a worn footpath. Same material and height as the path, so crossings blend.
+  const rowCount = Math.ceil(graves.length / COLUMNS.length);
+  const trailRandom = mulberry32(LAYOUT_SEED + 1);
+  const trails: Mesh[] = [];
+  for (let row = 0; row < rowCount; row++) {
+    const rowGraves = graves.slice(row * COLUMNS.length, (row + 1) * COLUMNS.length);
+    const rowZ = rowGraves.reduce((sum, g) => sum + g.stonePosition.z, 0) / rowGraves.length;
+    const trail = CreateGround(`trail${row}`, { width: maxX - minX - 2, height: 0.9, subdivisionsX: 40, subdivisionsY: 1 }, scene);
+    const phase = trailRandom() * Math.PI * 2;
+    const positions = trail.getVerticesData(VertexBuffer.PositionKind)!;
+    for (let v = 0; v < positions.length; v += 3) {
+      const x = positions[v];
+      positions[v + 2] += Math.sin(x * 0.35 + phase) * 0.25 + Math.sin(x * 0.9 + phase * 2) * 0.08;
+    }
+    trail.setVerticesData(VertexBuffer.PositionKind, positions);
+    // Visitors stand about here to read a stone, just clear of the candles
+    trail.position.set((minX + maxX) / 2, 0.01, rowZ - 1.7);
+    trails.push(trail);
+  }
+  const trailMesh = Mesh.MergeMeshes(trails, true)!;
+  trailMesh.material = pathMat;
+
   // Headstones: one mesh drawn once per grave via thin instances
   const body = CreateBox("stoneBody", { width: 1.2, height: 1.2, depth: 0.25 }, scene);
   body.position.y = 0.6;
@@ -455,7 +478,7 @@ function createScene() {
     for (let i = 0; i < Math.min(respects[grave.game.name] ?? 0, MAX_CANDLES_PER_STONE); i++) addCandle(grave);
   }
 
-  for (const mesh of [grass, path, stone, engravings, tv, speaker, screenMesh, ...fence]) mesh.freezeWorldMatrix();
+  for (const mesh of [grass, path, trailMesh, stone, engravings, tv, speaker, screenMesh, ...fence]) mesh.freezeWorldMatrix();
   for (const mat of [grassMat, pathMat, stoneMat, ironMat, engravingMat, tvMat, speakerMat, screenMat, candleMat]) {
     mat.freeze();
   }
