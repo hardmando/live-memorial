@@ -19,6 +19,8 @@ import "@babylonjs/core/Meshes/thinInstanceMesh";
 import grassTextureUrl from "./textures/grassTexture.jpg";
 import { formatDate, games, lifespanDays, type Game } from "./games";
 import { Ambience } from "./ambience";
+import { createForest } from "./forest";
+import { mulberry32 } from "./random";
 
 const EYE_HEIGHT = 1.7;
 /** Cemetery fence bounds; the closed gate is centred on the near (min z) side */
@@ -68,16 +70,6 @@ interface Grave {
   candles: number;
   /** World-space corners of the TV screen: top-left, top-right, bottom-right, bottom-left */
   screen: Vector3[];
-}
-
-/** Small seeded PRNG so the "natural" layout is identical on every visit */
-function mulberry32(seed: number) {
-  return () => {
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 // Loose rows facing the gate, oldest shutdowns nearest; each stone a little off-line,
@@ -328,9 +320,9 @@ function createScene() {
   const graves = layoutGraves();
   const { minX, maxX, minZ, maxZ } = BOUNDS;
 
-  // Ground runs well past the fence into the fog; the path leads from the gate to the back
-  const groundW = 60;
-  const groundD = 70;
+  // Ground runs out under the surrounding forest; the path leads from the gate to the back
+  const groundW = 160;
+  const groundD = 170;
   const grassMat = new StandardMaterial("grass", scene);
   const grassTex = new Texture(grassTextureUrl, scene);
   grassTex.uScale = groundW / 2;
@@ -365,6 +357,7 @@ function createScene() {
   ironMat.diffuseColor = new Color3(0.08, 0.08, 0.09);
   ironMat.specularColor = new Color3(0.2, 0.2, 0.2);
   const fence = createFence(scene, ironMat, stoneMat);
+  createForest(scene, BOUNDS);
 
   // 2000s plasma TVs on pedestal stands: glossy black panel and stand, silver speaker bar
   const standBase = CreateBox("tvBase", { width: 0.5, height: 0.04, depth: 0.35 }, scene);
